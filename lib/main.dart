@@ -68,29 +68,113 @@ class _POSScreenState extends State<POSScreen> {
   double get total => cart.fold(0, (sum, item) => sum + (item['price'] * item['qty']));
 
   void _showPreview() {
-    showDialog(context: context, builder: (ctx) => AlertDialog(
-      title: const Center(child: Text("ใบเสร็จ")),
-      content: SingleChildScrollView(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Text("เป๋าตุง บ่อนไก่...", style: TextStyle(fontWeight: FontWeight.bold)),
-          const Text("โทร: 095-532-5638"),
-          const Divider(),
-          ...cart.map((e) => Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text("${e['name']} x${e['qty']}")), Text("${(e['price']*e['qty']).toInt()} ฿")])).toList(),
-          const Divider(),
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("รวมเงิน"), Text("${total.toInt()} ฿", style: const TextStyle(fontWeight: FontWeight.bold))]),
-        ]),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("แก้ไข")),
-        ElevatedButton(onPressed: () async {
-          await DatabaseHelper.instance.saveSale(selectedTable, total, cart);
-          setState(() => cart = []); Navigator.pop(ctx);
-          _load(); // รีโหลดเผื่อมีการเปลี่ยนแปลง
-        }, child: const Text("ยืนยัน")),
-      ],
-    ));
-  }
+    String formattedDate = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now());
+    
+    // สร้างตัวแปรสำหรับแสดงสถานะให้สวยงาม
+    String customerStatus = selectedTable == "กลับบ้าน" 
+        ? " สถานะ: สั่งกลับบ้าน" 
+        : " สถานะ: โต๊ะหมายเลข $selectedTable";
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: const Center(child: Text("ตรวจสอบออเดอร์", style: TextStyle(fontWeight: FontWeight.bold))),
+        content: Container(
+          width: 350,
+          padding: const EdgeInsets.all(10),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text("KITTIPHON POS SHOP", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
+                const Text("โทร: 08x-xxx-xxxx"),
+                const SizedBox(height: 10),
+                const Text("------------------------------------------"),
+                
+                // --- ส่วนแสดงสถานะลูกค้า (โต๊ะ/กลับบ้าน) ---
+                Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 15),
+                  decoration: BoxDecoration(
+                    color: Colors.indigo[50],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    customerStatus,
+                    style: const TextStyle(
+                      fontSize: 18, 
+                      fontWeight: FontWeight.bold, 
+                      color: Color.fromARGB(255, 0, 0, 0)
+                    ),
+                  ),
+                ),
+                // --------------------------------------
 
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("วันที่: $formattedDate", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                    const Text("ใบเสร็จชั่วคราว", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  ],
+                ),
+                const Text("------------------------------------------"),
+                
+                // รายการอาหาร
+                ...cart.map((item) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(child: Text("${item['name']} x${item['qty']}", style: const TextStyle(fontSize: 16))),
+                      Text("${(item['price'] * item['qty']).toInt()} ฿", style: const TextStyle(fontWeight: FontWeight.w500)),
+                    ],
+                  ),
+                )).toList(),
+                
+                const Text("------------------------------------------"),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text("ยอดรวมทั้งสิ้น", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                    Text("${total.toInt()} บาท", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.indigo)),
+                  ],
+                ),
+                const SizedBox(height: 20),
+                const Text("กรุณาตรวจสอบรายการก่อนยืนยัน", style: TextStyle(fontSize: 12, color: Colors.redAccent, fontStyle: FontStyle.italic)),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx), 
+            child: const Text("แก้ไขรายการ", style: TextStyle(color: Colors.grey))
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.indigo, 
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))
+            ),
+            onPressed: () async {
+              // บันทึกลงฐานข้อมูล (Table Name จะถูกเก็บเป็น "1"-"12" หรือ "กลับบ้าน")
+              await DatabaseHelper.instance.saveSale(selectedTable, total, cart);
+              setState(() => cart = []); 
+              Navigator.pop(ctx);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("บันทึกยอดขายเรียบร้อยแล้ว!"), backgroundColor: Colors.green)
+              );
+            }, 
+            child: const Text("ยืนยันออเดอร์", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+          ),
+        ],
+      ),
+    );
+  }
+  
   @override
   Widget build(BuildContext context) {
     return Padding(
