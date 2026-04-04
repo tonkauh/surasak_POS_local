@@ -33,7 +33,7 @@ class _MainScreenState extends State<MainScreen> {
       appBar: AppBar(title: Text(_titles[_selectedIndex], style: const TextStyle(fontWeight: FontWeight.bold)), centerTitle: true),
       drawer: Drawer(
         child: Column(children: [
-          const UserAccountsDrawerHeader(decoration: BoxDecoration(color: Colors.indigo), accountName: Text("KITTIPHON POS"), accountEmail: Text("ระบบจัดการร้านค้า")),
+          const UserAccountsDrawerHeader(decoration: BoxDecoration(color: Colors.indigo), accountName: Text("รักน้ำรักปลารักแม่"), accountEmail: Text("ระบบจัดการร้านค้า")),
           ListTile(leading: const Icon(Icons.shopping_cart), title: const Text("หน้าขาย"), onTap: () { setState(() => _selectedIndex = 0); Navigator.pop(context); }),
           ListTile(leading: const Icon(Icons.bar_chart), title: const Text("Dashboard"), onTap: () { setState(() => _selectedIndex = 1); Navigator.pop(context); }),
           ListTile(leading: const Icon(Icons.settings), title: const Text("จัดการเมนู"), onTap: () { setState(() => _selectedIndex = 2); Navigator.pop(context); }),
@@ -44,7 +44,6 @@ class _MainScreenState extends State<MainScreen> {
   }
 }
 
-// --- หน้าขาย POS ---
 class POSScreen extends StatefulWidget {
   const POSScreen({super.key});
   @override
@@ -57,23 +56,94 @@ class _POSScreenState extends State<POSScreen> {
   List<Map<String, dynamic>> cart = [];
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _loadProducts();
+    _loadTableOrder(selectedTable); // โหลดของโต๊ะ 1 มาก่อน
+  }
 
-  // แก้ไขฟังก์ชันโหลดข้อมูลให้ถูกต้อง
-  void _load() async {
+  void _loadProducts() async {
     final data = await DatabaseHelper.instance.getAllProducts();
     setState(() { products = data; });
   }
 
+  // โหลดรายการที่พักไว้ของโต๊ะนั้นๆ
+  void _loadTableOrder(String tableName) async {
+    final pending = await DatabaseHelper.instance.getPendingOrder(tableName);
+    setState(() {
+      selectedTable = tableName;
+      cart = pending;
+    });
+  }
+
+  // บันทึกรายการลงที่พักบิล (Auto-Save)
+  void _autoPark() async {
+    await DatabaseHelper.instance.savePendingOrder(selectedTable, cart);
+  }
+
   double get total => cart.fold(0, (sum, item) => sum + (item['price'] * item['qty']));
+
+  void _showChangeCalculator(double totalAmount) {
+    double received = 0;
+    final List<int> quickMoney = [1000, 500, 100, 20, 10, 5];
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            double change = received - totalAmount;
+            return AlertDialog(
+              title: const Center(child: Text("รับชำระเงิน", style: TextStyle(fontWeight: FontWeight.bold))),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text("ยอดรวม: ${totalAmount.toInt()} ฿", style: const TextStyle(fontSize: 20)),
+                  const SizedBox(height: 10),
+                  Text("รับเงินมา: ${received.toInt()} ฿", style: const TextStyle(fontSize: 24, color: Colors.blue, fontWeight: FontWeight.bold)),
+                  Text("เงินทอน: ${change < 0 ? 0 : change.toInt()} ฿", style: const TextStyle(fontSize: 32, color: Colors.green, fontWeight: FontWeight.bold)),
+                  if (change < 0 && received > 0) Text("(ยังขาดอีก ${-(change.toInt())} ฿)", style: const TextStyle(color: Colors.red)),
+                  const Divider(height: 30),
+                  Wrap(
+                    spacing: 10, runSpacing: 10, alignment: WrapAlignment.center,
+                    children: quickMoney.map((money) => SizedBox(
+                      width: 80,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[200], foregroundColor: Colors.black),
+                        onPressed: () => setDialogState(() => received += money),
+                        child: Text("$money"),
+                      ),
+                    )).toList(),
+                  ),
+                  const SizedBox(height: 15),
+                  TextButton(onPressed: () => setDialogState(() => received = 0), child: const Text("ล้างตัวเลข"))
+                ],
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ย้อนกลับ")),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
+                  onPressed: (received < totalAmount) ? null : () async {
+                    await DatabaseHelper.instance.saveSale(selectedTable, totalAmount, cart);
+                    setState(() { cart = []; }); 
+                    Navigator.pop(ctx); 
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("เช็คบิลเรียบร้อย!"), backgroundColor: Colors.green));
+                  }, 
+                  child: const Text("เสร็จสิ้น / บันทึกขาย"),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
 
   void _showPreview() {
     String formattedDate = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now());
-    
-    // สร้างตัวแปรสำหรับแสดงสถานะให้สวยงาม
-    String customerStatus = selectedTable == "กลับบ้าน" 
-        ? " สถานะ: สั่งกลับบ้าน" 
-        : " สถานะ: โต๊ะหมายเลข $selectedTable";
+    String customerStatus = selectedTable == "กลับบ้าน" ? " สถานะ: สั่งกลับบ้าน" : " สถานะ: โต๊ะหมายเลข $selectedTable";
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -81,94 +151,37 @@ class _POSScreenState extends State<POSScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
         title: const Center(child: Text("ตรวจสอบออเดอร์", style: TextStyle(fontWeight: FontWeight.bold))),
         content: Container(
-          width: 350,
-          padding: const EdgeInsets.all(10),
+          width: 350, padding: const EdgeInsets.all(10),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text("KITTIPHON POS SHOP", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
-                const Text("โทร: 08x-xxx-xxxx"),
+                const Text("เป๋าตุง บ่อนไก่....", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20)),
+                const Text("โทร: 095-532-5638"),
                 const SizedBox(height: 10),
                 const Text("------------------------------------------"),
-                
-                // --- ส่วนแสดงสถานะลูกค้า (โต๊ะ/กลับบ้าน) ---
                 Container(
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 15),
-                  decoration: BoxDecoration(
-                    color: Colors.indigo[50],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    customerStatus,
-                    style: const TextStyle(
-                      fontSize: 18, 
-                      fontWeight: FontWeight.bold, 
-                      color: Color.fromARGB(255, 0, 0, 0)
-                    ),
-                  ),
+                  decoration: BoxDecoration(color: Colors.indigo[50], borderRadius: BorderRadius.circular(8)),
+                  child: Text(customerStatus, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black)),
                 ),
-                // --------------------------------------
-
                 const SizedBox(height: 10),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text("วันที่: $formattedDate", style: const TextStyle(fontSize: 12, color: Colors.grey)),
-                    const Text("ใบเสร็จชั่วคราว", style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  ],
-                ),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("วันที่: $formattedDate", style: const TextStyle(fontSize: 12, color: Colors.grey)), const Text("ใบเสร็จชั่วคราว", style: TextStyle(fontSize: 12, color: Colors.grey))]),
                 const Text("------------------------------------------"),
-                
-                // รายการอาหาร
-                ...cart.map((item) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(child: Text("${item['name']} x${item['qty']}", style: const TextStyle(fontSize: 16))),
-                      Text("${(item['price'] * item['qty']).toInt()} ฿", style: const TextStyle(fontWeight: FontWeight.w500)),
-                    ],
-                  ),
-                )).toList(),
-                
+                ...cart.map((item) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Expanded(child: Text("${item['name']} x${item['qty']}", style: const TextStyle(fontSize: 16))), Text("${(item['price'] * item['qty']).toInt()} ฿")]))).toList(),
                 const Text("------------------------------------------"),
                 const SizedBox(height: 10),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text("ยอดรวมทั้งสิ้น", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                    Text("${total.toInt()} บาท", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.indigo)),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                const Text("กรุณาตรวจสอบรายการก่อนยืนยัน", style: TextStyle(fontSize: 12, color: Colors.redAccent, fontStyle: FontStyle.italic)),
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("ยอดรวมทั้งสิ้น", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)), Text("${total.toInt()} บาท", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.indigo))]),
               ],
             ),
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx), 
-            child: const Text("แก้ไขรายการ", style: TextStyle(color: Colors.grey))
-          ),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("แก้ไขรายการ")),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.indigo, 
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))
-            ),
-            onPressed: () async {
-              // บันทึกลงฐานข้อมูล (Table Name จะถูกเก็บเป็น "1"-"12" หรือ "กลับบ้าน")
-              await DatabaseHelper.instance.saveSale(selectedTable, total, cart);
-              setState(() => cart = []); 
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("บันทึกยอดขายเรียบร้อยแล้ว!"), backgroundColor: Colors.green)
-              );
-            }, 
-            child: const Text("ยืนยันออเดอร์", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold))
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
+            onPressed: () { _autoPark(); _showChangeCalculator(total); }, 
+            child: const Text("ยืนยันออเดอร์", style: TextStyle(fontWeight: FontWeight.bold))
           ),
         ],
       ),
@@ -180,30 +193,43 @@ class _POSScreenState extends State<POSScreen> {
     return Padding(
       padding: const EdgeInsets.all(12.0),
       child: Row(children: [
-        // ซ้าย: โต๊ะ
+        // ซ้าย: โต๊ะ (เพิ่มระบบโหลดเมื่อคลิกสลับโต๊ะ)
         Container(width: 120, decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(15)), child: Column(children: [
-          Expanded(child: GridView.builder(padding: const EdgeInsets.all(5), gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, mainAxisSpacing: 5, crossAxisSpacing: 5), itemCount: 12, itemBuilder: (ctx, i) => InkWell(onTap: () => setState(() => selectedTable = "${i+1}"), child: Container(decoration: BoxDecoration(color: selectedTable == "${i+1}" ? Colors.indigo : Colors.white, borderRadius: BorderRadius.circular(8)), child: Center(child: Text("${i+1}", style: TextStyle(color: selectedTable == "${i+1}" ? Colors.white : Colors.black))))))),
-          Padding(padding: const EdgeInsets.all(8), child: ChoiceChip(label: const Text("กลับบ้าน"), selected: selectedTable == "กลับบ้าน", onSelected: (v) => setState(() => selectedTable = "กลับบ้าน"))),
+          Expanded(child: GridView.builder(padding: const EdgeInsets.all(5), gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, mainAxisSpacing: 5, crossAxisSpacing: 5), itemCount: 12, itemBuilder: (ctx, i) {
+            String tableNum = "${i+1}";
+            return InkWell(
+              onTap: () { _autoPark(); _loadTableOrder(tableNum); }, // สลับโต๊ะ: พักอันเก่า โหลดอันใหม่
+              child: Container(decoration: BoxDecoration(color: selectedTable == tableNum ? Colors.indigo : Colors.white, borderRadius: BorderRadius.circular(8)), child: Center(child: Text(tableNum, style: TextStyle(color: selectedTable == tableNum ? Colors.white : Colors.black)))),
+            );
+          })),
+          Padding(padding: const EdgeInsets.all(8), child: ChoiceChip(label: const Text("กลับบ้าน"), selected: selectedTable == "กลับบ้าน", onSelected: (v) { _autoPark(); _loadTableOrder("กลับบ้าน"); })),
         ])),
         const SizedBox(width: 10),
-        // กลาง: เมนู
-        Expanded(flex: 3, child: products.isEmpty ? const Center(child: Text("ไปเพิ่มเมนูที่หน้าจัดการก่อนครับ")) : GridView.builder(gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 160, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.1), itemCount: products.length, itemBuilder: (ctx, i) => Card(child: InkWell(onTap: () => setState(() {
-          int idx = cart.indexWhere((it) => it['id'] == products[i]['id']);
-          if(idx != -1) cart[idx]['qty']++; else cart.add({...products[i], 'qty': 1});
-        }), child: Center(child: Text(products[i]['name'], textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))))))),
+        // กลาง: เมนู (เพิ่ม Auto-Park เมื่อเพิ่มของ)
+        Expanded(flex: 3, child: products.isEmpty ? const Center(child: Text("ไปเพิ่มเมนูที่หน้าจัดการก่อนครับ")) : GridView.builder(gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 160, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.1), itemCount: products.length, itemBuilder: (ctx, i) => Card(child: InkWell(onTap: () {
+          setState(() {
+            int idx = cart.indexWhere((it) => it['id'] == products[i]['id']);
+            if(idx != -1) cart[idx]['qty']++; else cart.add({...products[i], 'qty': 1});
+          });
+          _autoPark(); // บันทึกทันทีเมื่อมีการเปลี่ยนแปลง
+        }, child: Center(child: Text(products[i]['name'], textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold))))))),
         const SizedBox(width: 10),
-        // ขวา: ตะกร้า
+        // ขวา: ตะกร้า (เพิ่ม Auto-Park เมื่อแก้จำนวน)
         Container(width: 300, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(15), boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 5)]), child: Column(children: [
           Container(width: double.infinity, padding: const EdgeInsets.all(15), decoration: const BoxDecoration(color: Colors.indigo, borderRadius: BorderRadius.vertical(top: Radius.circular(15))), child: Text(selectedTable == "กลับบ้าน" ? "สั่งกลับบ้าน" : "โต๊ะ $selectedTable", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))),
-          Expanded(child: ListView.builder(itemCount: cart.length, itemBuilder: (ctx, i) => ListTile(title: Text(cart[i]['name'], maxLines: 1, overflow: TextOverflow.ellipsis), subtitle: Row(children: [IconButton(icon: const Icon(Icons.remove_circle_outline, size: 20), onPressed: () => setState(() => cart[i]['qty'] > 1 ? cart[i]['qty']-- : cart.removeAt(i))), Text("${cart[i]['qty']}"), IconButton(icon: const Icon(Icons.add_circle_outline, size: 20), onPressed: () => setState(() => cart[i]['qty']++))]), trailing: Text("${(cart[i]['price']*cart[i]['qty']).toInt()}")))),
-          Padding(padding: const EdgeInsets.all(15), child: Column(children: [Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("รวม:"), Text("${total.toInt()} ฿", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.indigo))]), const SizedBox(height: 10), SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: cart.isEmpty ? null : _showPreview, style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white), child: const Text("ยืนยันออเดอร์")))]))
+          Expanded(child: ListView.builder(itemCount: cart.length, itemBuilder: (ctx, i) => ListTile(title: Text(cart[i]['name'], maxLines: 1), subtitle: Row(children: [
+            IconButton(icon: const Icon(Icons.remove_circle_outline, size: 20), onPressed: () { setState(() { if(cart[i]['qty'] > 1) cart[i]['qty']--; else cart.removeAt(i); }); _autoPark(); }),
+            Text("${cart[i]['qty']}"),
+            IconButton(icon: const Icon(Icons.add_circle_outline, size: 20), onPressed: () { setState(() { cart[i]['qty']++; }); _autoPark(); }),
+          ]), trailing: Text("${(cart[i]['price']*cart[i]['qty']).toInt()}")))),
+          Padding(padding: const EdgeInsets.all(15), child: Column(children: [Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("รวม:"), Text("${total.toInt()} ฿", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.indigo))]), const SizedBox(height: 10), SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: cart.isEmpty ? null : _showPreview, child: const Text("ยืนยันออเดอร์")))]))
         ])),
       ]),
     );
   }
 }
 
-// --- หน้า Dashboard (สถิติ) ---
+// ... ส่วน Dashboard และ ManageMenu คงเดิมตามที่คุณส่งมา ...
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
   @override
@@ -211,35 +237,111 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  DateTime date = DateTime.now(); double total = 0; List<Map<String, dynamic>> sales = []; List<Map<String, dynamic>> tops = [];
+  DateTime selectedDate = DateTime.now();
+  double dailyTotal = 0;
+  List<Map<String, dynamic>> salesList = [];
+  List<Map<String, dynamic>> topItemsList = [];
+
   @override
-  void initState() { super.initState(); _load(); }
-  void _load() async {
-    String d = date.toString().split(' ')[0];
-    var s = await DatabaseHelper.instance.getSalesByDate(d);
-    var t = await DatabaseHelper.instance.getTopItems(d);
-    double sum = 0; for(var x in s) sum += x['total'];
-    setState(() { sales = s; tops = t; total = sum; });
+  void initState() { super.initState(); _loadDashboardData(); }
+
+  void _loadDashboardData() async {
+    String formattedDate = selectedDate.toString().split(' ')[0];
+    final sales = await DatabaseHelper.instance.getSalesByDate(formattedDate);
+    final tops = await DatabaseHelper.instance.getTopItems(formattedDate);
+    double totalSum = 0;
+    for (var s in sales) { totalSum += s['total']; }
+    setState(() { salesList = sales; topItemsList = tops; dailyTotal = totalSum; });
   }
+
+  void _deleteSaleRecord(int id) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("ยืนยันการลบ"),
+        content: const Text("คุณแน่ใจใช่ไหมที่จะลบประวัติบิลนี้?"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ยกเลิก")),
+          ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: Colors.red), onPressed: () async {
+            await DatabaseHelper.instance.deleteSale(id);
+            Navigator.pop(ctx); _loadDashboardData();
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ลบรายการเรียบร้อย")));
+          }, child: const Text("ลบทิ้ง", style: TextStyle(color: Colors.white))),
+        ],
+      ),
+    );
+  }
+
+  void _editSaleRecord(Map<String, dynamic> sale) {
+    final tableController = TextEditingController(text: sale['tableName']);
+    final totalController = TextEditingController(text: sale['total'].toInt().toString());
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("แก้ไขข้อมูลบิล"),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: tableController, decoration: const InputDecoration(labelText: "ชื่อโต๊ะ / สถานะ")),
+          const SizedBox(height: 10),
+          TextField(controller: totalController, decoration: const InputDecoration(labelText: "ยอดเงินรวม"), keyboardType: TextInputType.number),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ยกเลิก")),
+          ElevatedButton(onPressed: () async {
+            if (tableController.text.isNotEmpty && totalController.text.isNotEmpty) {
+              await DatabaseHelper.instance.updateSale(sale['id'], tableController.text, double.parse(totalController.text));
+              Navigator.pop(ctx); _loadDashboardData();
+            }
+          }, child: const Text("บันทึก")),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Padding(padding: const EdgeInsets.all(20), child: Column(children: [
-      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text("สถิติวันที่: ${DateFormat('dd/MM/yyyy').format(date)}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)), ElevatedButton(onPressed: () async { DateTime? p = await showDatePicker(context: context, initialDate: date, firstDate: DateTime(2025), lastDate: DateTime.now()); if(p != null) { setState(() => date = p); _load(); } }, child: const Text("เปลี่ยนวัน"))]),
-      const SizedBox(height: 15),
-      Row(children: [_card("ยอดรวม", "${total.toInt()} ฿", Colors.green), _card("จำนวนบิล", "${sales.length}", Colors.orange)]),
-      const SizedBox(height: 15),
-      Expanded(child: Row(children: [
-        Expanded(child: _box("สินค้าขายดี", ListView.builder(itemCount: tops.length, itemBuilder: (ctx, i) => ListTile(title: Text(tops[i]['name']), trailing: Text("${tops[i]['total_qty']}"))))),
-        const SizedBox(width: 15),
-        Expanded(child: _box("รายการบิล", ListView.builder(itemCount: sales.length, itemBuilder: (ctx, i) => ListTile(title: Text("บิล #${sales[i]['id']}"), trailing: Text("${sales[i]['total'].toInt()}"))))),
-      ])),
-    ]));
+    return Padding(
+      padding: const EdgeInsets.all(24.0), 
+      child: Column(children: [
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text("สรุปยอดขายรายวัน", style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold)),
+            Text("ประจำวันที่: ${DateFormat('dd MMMM yyyy').format(selectedDate)}", style: TextStyle(fontSize: 16, color: Colors.grey[600])),
+          ]),
+          ElevatedButton.icon(onPressed: () async {
+            DateTime? picked = await showDatePicker(context: context, initialDate: selectedDate, firstDate: DateTime(2025), lastDate: DateTime.now());
+            if (picked != null) { setState(() => selectedDate = picked); _loadDashboardData(); }
+          }, icon: const Icon(Icons.calendar_month), label: const Text("เลือกวันที่ดูย้อนหลัง"))
+        ]),
+        const SizedBox(height: 25),
+        Row(children: [
+          _buildStatCard("ยอดขายรวม", "${dailyTotal.toInt()} ฿", Icons.monetization_on, Colors.green),
+          const SizedBox(width: 15),
+          _buildStatCard("จำนวนบิล", "${salesList.length} รายการ", Icons.receipt_long, Colors.orange),
+          const SizedBox(width: 15),
+          _buildStatCard("เมนูยอดฮิต", topItemsList.isNotEmpty ? topItemsList[0]['name'] : "-", Icons.star, Colors.purple),
+        ]),
+        const SizedBox(height: 25),
+        Expanded(child: Row(children: [
+          Expanded(flex: 1, child: _buildDashboardBox("🏆 5 อันดับสินค้าขายดี", topItemsList.isEmpty ? const Center(child: Text("ไม่มีข้อมูลการขาย")) : ListView.builder(itemCount: topItemsList.length, itemBuilder: (ctx, i) => ListTile(leading: CircleAvatar(backgroundColor: Colors.indigo[50], child: Text("${i+1}")), title: Text(topItemsList[i]['name'], style: const TextStyle(fontWeight: FontWeight.bold)), trailing: Text("${topItemsList[i]['total_qty']} จาน", style: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)))))),
+          const SizedBox(width: 20),
+          Expanded(flex: 1, child: _buildDashboardBox("🧾 ประวัติการขาย (ล่าสุด)", salesList.isEmpty ? const Center(child: Text("ยังไม่มีการออกบิล")) : ListView.separated(itemCount: salesList.length, separatorBuilder: (ctx, i) => const Divider(height: 1), itemBuilder: (ctx, i) {
+            final sale = salesList[i];
+            return ListTile(title: Text("บิล #${sale['id']} - ${sale['tableName']}", style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text("ยอดรวม: ${sale['total'].toInt()} ฿"), trailing: Row(mainAxisSize: MainAxisSize.min, children: [IconButton(icon: const Icon(Icons.edit, color: Colors.blue, size: 20), onPressed: () => _editSaleRecord(sale)), IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red, size: 20), onPressed: () => _deleteSaleRecord(sale['id']))]));
+          })))
+        ]))
+      ]),
+    );
   }
-  Widget _card(String t, String v, Color c) => Expanded(child: Card(child: Padding(padding: const EdgeInsets.all(15), child: Column(children: [Text(t), Text(v, style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: c))]))));
-  Widget _box(String t, Widget c) => Container(padding: const EdgeInsets.all(15), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 5)]), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(t, style: const TextStyle(fontWeight: FontWeight.bold)), const Divider(), Expanded(child: c)]));
+
+  Widget _buildStatCard(String title, String value, IconData icon, Color color) {
+    return Expanded(child: Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(15), boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)]), child: Column(children: [Icon(icon, color: color, size: 40), const SizedBox(height: 10), Text(title, style: const TextStyle(color: Colors.grey, fontSize: 14)), Text(value, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold))])));
+  }
+
+  Widget _buildDashboardBox(String title, Widget content) {
+    return Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(20), boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 10)]), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.indigo)), const Divider(height: 30), Expanded(child: content)]));
+  }
 }
 
-// --- หน้าจัดการเมนู (แก้ไขจุดบันทึกแล้วไม่โชว์) ---
 class ManageMenuScreen extends StatefulWidget {
   const ManageMenuScreen({super.key});
   @override
@@ -254,12 +356,9 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
   @override
   void initState() { super.initState(); _refresh(); }
 
-  // แก้ไขฟังก์ชัน Refresh ให้ถูกต้อง
   void _refresh() async {
     final data = await DatabaseHelper.instance.getAllProducts();
-    setState(() {
-      prods = data;
-    });
+    setState(() { prods = data; });
   }
 
   @override
@@ -282,13 +381,10 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ยกเลิก")),
         ElevatedButton(onPressed: () async {
           if(nameCtrl.text.isNotEmpty && priceCtrl.text.isNotEmpty) {
-            // 1. บันทึกลงฐานข้อมูล
+
             await DatabaseHelper.instance.addProduct(nameCtrl.text, double.parse(priceCtrl.text));
             nameCtrl.clear(); priceCtrl.clear();
-            // 2. ปิด Dialog
-            Navigator.pop(context);
-            // 3. รีเฟรชหน้าจอทันที
-            _refresh();
+            Navigator.pop(context); _refresh();
           }
         }, child: const Text("บันทึก"))
       ],
