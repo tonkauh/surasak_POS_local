@@ -1,3 +1,5 @@
+import 'package:blue_thermal_printer/blue_thermal_printer.dart';
+import 'printer_service.dart'; // เพิ่มบรรทัดนี้ต่อจาก import ตัวอื่น
 import 'package:flutter/material.dart';
 import 'database_helper.dart';
 import 'package:intl/intl.dart';
@@ -27,6 +29,67 @@ class _MainScreenState extends State<MainScreen> {
   final List<Widget> _pages = [const POSScreen(), const DashboardScreen(), const ManageMenuScreen()];
   final List<String> _titles = ['หน้าขาย (POS)', 'Dashboard', 'จัดการร้าน'];
 
+  void _showPrinterSetup() async {
+    // 1. ดึงรายชื่อทั้งหมดมาก่อน
+    List<BluetoothDevice> allDevices = await PrinterService.getPairedDevices();
+    
+    // 2. กรองเฉพาะตัวที่มีคำว่า Printer หรือชื่อยี่ห้อ (หรือจะโชว์ทั้งหมดแต่แยกประเภทก็ได้)
+    // ในที่นี้ผมจะลอง Filter ตัวที่ชื่อน่าจะเป็นเครื่องปริ้นมาไว้บนสุดครับ
+    List<BluetoothDevice> printerDevices = allDevices.where((d) {
+      String name = d.name?.toLowerCase() ?? "";
+      return name.contains("print") || name.contains("epson") || name.contains("tm-") || name.contains("mpt");
+    }).toList();
+
+    // ถ้ากรองแล้วไม่เจออะไรเลย ให้ใช้รายชื่อทั้งหมด (เผื่อเครื่องปริ้นชื่อแปลกๆ)
+    List<BluetoothDevice> displayList = printerDevices.isEmpty ? allDevices : printerDevices;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Column(
+          children: [
+            const Icon(Icons.print, size: 50, color: Colors.indigo),
+            const SizedBox(height: 10),
+            const Text("เลือกเครื่องปริ้นบลูทูธ", style: TextStyle(fontSize: 18)),
+            if (printerDevices.isNotEmpty)
+              const Text("(พบเครื่องที่น่าจะเป็นเครื่องปริ้น)", style: TextStyle(fontSize: 12, color: Colors.green)),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: displayList.isEmpty 
+            ? const Center(child: Text("ไม่พบอุปกรณ์ที่ Pair ไว้\nกรุณาไป Pair ใน Setting ของมือถือก่อนครับ", textAlign: TextAlign.center))
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: displayList.length,
+                itemBuilder: (ctx, i) => Card(
+                  elevation: 0,
+                  color: Colors.grey[100],
+                  margin: const EdgeInsets.symmetric(vertical: 4),
+                  child: ListTile(
+                    leading: const Icon(Icons.bluetooth, color: Colors.blue),
+                    title: Text(displayList[i].name ?? "Unknown Device", style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(displayList[i].address ?? ""),
+                    onTap: () async {
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("กำลังเชื่อมต่อ...")));
+                      await PrinterService.bluetooth.connect(displayList[i]);
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text("เชื่อมต่อ ${displayList[i].name} สำเร็จ!"), backgroundColor: Colors.green)
+                      );
+                    },
+                  ),
+                ),
+              ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ยกเลิก"))
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -37,6 +100,15 @@ class _MainScreenState extends State<MainScreen> {
           ListTile(leading: const Icon(Icons.shopping_cart), title: const Text("หน้าขาย"), onTap: () { setState(() => _selectedIndex = 0); Navigator.pop(context); }),
           ListTile(leading: const Icon(Icons.bar_chart), title: const Text("Dashboard"), onTap: () { setState(() => _selectedIndex = 1); Navigator.pop(context); }),
           ListTile(leading: const Icon(Icons.settings), title: const Text("จัดการเมนู"), onTap: () { setState(() => _selectedIndex = 2); Navigator.pop(context); }),
+          const Divider(),
+          ListTile(
+            leading: const Icon(Icons.print_sharp, color: Colors.indigo),
+            title: const Text("ตั้งค่าเครื่องปริ้น", style: TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold)),
+            onTap: () {
+              Navigator.pop(context);
+              _showPrinterSetup();
+            },
+          ),
         ]),
       ),
       body: SafeArea(child: _pages[_selectedIndex]),
@@ -84,6 +156,8 @@ class _POSScreenState extends State<POSScreen> {
   double get total => cart.fold(0, (sum, item) => sum + (item['price'] * item['qty']));
 
   void _showChangeCalculator(double totalAmount) {
+    // ใช้ Controller เพื่อควบคุมตัวเลขในช่องกรอก
+    final TextEditingController receivedCtrl = TextEditingController();
     double received = 0;
     final List<int> quickMoney = [1000, 500, 100, 20, 10, 5];
 
@@ -93,45 +167,135 @@ class _POSScreenState extends State<POSScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
+            // คำนวณเงินทอนแบบ Real-time
             double change = received - totalAmount;
+
             return AlertDialog(
-              title: const Center(child: Text("รับชำระเงิน", style: TextStyle(fontWeight: FontWeight.bold))),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text("ยอดรวม: ${totalAmount.toInt()} ฿", style: const TextStyle(fontSize: 20)),
-                  const SizedBox(height: 10),
-                  Text("รับเงินมา: ${received.toInt()} ฿", style: const TextStyle(fontSize: 24, color: Colors.blue, fontWeight: FontWeight.bold)),
-                  Text("เงินทอน: ${change < 0 ? 0 : change.toInt()} ฿", style: const TextStyle(fontSize: 32, color: Colors.green, fontWeight: FontWeight.bold)),
-                  if (change < 0 && received > 0) Text("(ยังขาดอีก ${-(change.toInt())} ฿)", style: const TextStyle(color: Colors.red)),
-                  const Divider(height: 30),
-                  Wrap(
-                    spacing: 10, runSpacing: 10, alignment: WrapAlignment.center,
-                    children: quickMoney.map((money) => SizedBox(
-                      width: 80,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.grey[200], foregroundColor: Colors.black),
-                        onPressed: () => setDialogState(() => received += money),
-                        child: Text("$money"),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Center(
+                child: Text("ชำระเงินเงินสด", style: TextStyle(fontWeight: FontWeight.bold))
+              ),
+              content: SingleChildScrollView( // แก้บั๊ก UI ตอนคีย์บอร์ดขึ้น
+                child: SizedBox(
+                  width: 350,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text("ยอดรวม: ${totalAmount.toInt()} ฿", style: const TextStyle(fontSize: 18)),
+                      const SizedBox(height: 15),
+                      
+                      // ช่องกรอกจำนวนเงิน (พิมพ์เลขแทน)
+                      TextField(
+                        controller: receivedCtrl,
+                        autofocus: true, // ให้แป้นพิมพ์เด้งรอเลย
+                        keyboardType: TextInputType.number,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.blue),
+                        decoration: InputDecoration(
+                          hintText: "0",
+                          labelText: "รับเงินมา (บาท)",
+                          floatingLabelBehavior: FloatingLabelBehavior.always,
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(15)),
+                          suffixText: "฿",
+                        ),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            received = double.tryParse(value) ?? 0;
+                          });
+                        },
                       ),
-                    )).toList(),
+                      
+                      const SizedBox(height: 15),
+                      // แสดงเงินทอน
+                      Text(
+                        "เงินทอน: ${change < 0 ? 0 : change.toInt()} ฿", 
+                        style: const TextStyle(fontSize: 34, color: Colors.green, fontWeight: FontWeight.bold)
+                      ),
+                      
+                      // แสดงยอดที่ยังขาด (ถ้ามี)
+                      if (change < 0 && received > 0) 
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text("ยังขาดอีก ${-(change.toInt())} ฿", style: const TextStyle(color: Colors.red)),
+                        ),
+                      
+                      const Divider(height: 40),
+
+                      // ปุ่มแบงก์ทางลัด (Quick Add)
+                      const Text("ปุ่มทางลัดเพิ่มเงิน", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        alignment: WrapAlignment.center,
+                        children: quickMoney.map((money) => SizedBox(
+                          width: 80,
+                          child: OutlinedButton(
+                            onPressed: () {
+                              setDialogState(() {
+                                received += money;
+                                // อัปเดตตัวเลขในช่องพิมพ์ให้ตรงกัน
+                                receivedCtrl.text = received.toInt().toString(); 
+                              });
+                            },
+                            child: Text("$money"),
+                          ),
+                        )).toList(),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 15),
-                  TextButton(onPressed: () => setDialogState(() => received = 0), child: const Text("ล้างตัวเลข"))
-                ],
+                ),
               ),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ย้อนกลับ")),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
-                  onPressed: (received < totalAmount) ? null : () async {
-                    await DatabaseHelper.instance.saveSale(selectedTable, totalAmount, cart);
-                    setState(() { cart = []; }); 
-                    Navigator.pop(ctx); 
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("เช็คบิลเรียบร้อย!"), backgroundColor: Colors.green));
-                  }, 
-                  child: const Text("เสร็จสิ้น / บันทึกขาย"),
+                Column(
+                  children: [
+                    Row(
+                      children: [
+                        // --- ปุ่มจ่ายพอดี (ข้ามการทอน) ---
+                        Expanded(
+                          child: TextButton(
+                            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 15)),
+                            onPressed: () async {
+                              await DatabaseHelper.instance.saveSale(selectedTable, totalAmount, cart);
+                              setState(() { cart = []; });
+                              Navigator.pop(ctx); // ปิดหน้าเงินทอน
+                              Navigator.pop(context); // ปิดหน้าพรีวิว
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text("จ่ายพอดี / บันทึกขายเรียบร้อย"), backgroundColor: Colors.indigo)
+                              );
+                            },
+                            child: const Text("จ่ายพอดี (ข้าม)"),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        // --- ปุ่มยืนยัน (กดได้เมื่อเงินครบเท่านั้น) ---
+                        Expanded(
+                          child: ElevatedButton(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.indigo, 
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 15),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))
+                            ),
+                            onPressed: (received < totalAmount) ? null : () async {
+                              await DatabaseHelper.instance.saveSale(selectedTable, totalAmount, cart);
+                              setState(() { cart = []; }); 
+                              Navigator.pop(ctx); 
+                              Navigator.pop(context);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text("เช็คบิลเรียบร้อย!"), backgroundColor: Colors.green)
+                              );
+                            }, 
+                            child: const Text("ยืนยันบันทึก"),
+                          ),
+                        ),
+                      ],
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx), 
+                      child: const Text("ย้อนกลับ", style: TextStyle(color: Colors.grey))
+                    ),
+                  ],
                 ),
               ],
             );
@@ -177,6 +341,22 @@ class _POSScreenState extends State<POSScreen> {
           ),
         ),
         actions: [
+          OutlinedButton.icon(
+            onPressed: () async {
+              // สั่งปริ้นตรงๆ ผ่าน Service ตัวใหม่
+              await PrinterService.printReceipt(
+                tableName: selectedTable,
+                total: total,
+                cart: cart,
+              );
+
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("กำลังปริ้นใบเสร็จ...")),
+              );
+            },
+            icon: const Icon(Icons.print),
+            label: const Text("พิมพ์ใบเสร็จ"),
+          ),
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("แก้ไขรายการ")),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.indigo, foregroundColor: Colors.white),
