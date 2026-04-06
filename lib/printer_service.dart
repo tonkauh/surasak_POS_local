@@ -1,57 +1,118 @@
+import 'dart:typed_data';
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 import 'package:intl/intl.dart';
-import 'dart:typed_data';
 
 class PrinterService {
   static BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;
+  static const int maxChars = 32;
+
+  // ฟังก์ชันแปลง Unicode เป็น TIS-620 (เพื่อให้เครื่อง Code 21 อ่านออก)
+  static Uint8List _thaiToBytes(String text) {
+    List<int> bytes = [];
+    for (int i = 0; i < text.length; i++) {
+      int code = text.codeUnitAt(i);
+      if (code >= 0x0E01 && code <= 0x0E5B) {
+        bytes.add(code - 0x0E00 + 0xA0);
+      } else if (code < 0x80) {
+        bytes.add(code);
+      } else {
+        bytes.add(0x3F); // ตัวที่อ่านไม่ออกให้เป็น ?
+      }
+    }
+    return Uint8List.fromList(bytes);
+  }
+
+  // จัดหน้าชิดซ้าย-ขวา
+  static Uint8List _formatLine(String left, String right) {
+    int spaceCount = maxChars - (left.length + right.length);
+    if (spaceCount < 0) spaceCount = 1;
+    return _thaiToBytes(left + (" " * spaceCount) + right + "\n");
+  }
 
   static Future<List<BluetoothDevice>> getPairedDevices() async {
     return await bluetooth.getBondedDevices();
   }
 
-  // ฟังก์ชันสั่งปริ้นแบบไม่ต้องจัดช่องว่างเอง
+  static Future<void> printReceiptImage(Uint8List imageBytes) async {
+    bool? isConnected = await bluetooth.isConnected;
+    if (isConnected == true) {
+      // 1. [CRITICAL] Hard Reset & Alignment Initialization
+      // 0x1B, 0x40 = ESC @ (Initialize)
+      // 0x1B, 0x53 = ESC S (Standard Mode)
+      // 0x1B, 0x61, 0x00 = ESC a 0 (Force Align Left - ป้องกันการเยื้อง)
+      // 0x1D, 0x4C, 0x00, 0x00 = GS L 0 0 (Set Left Margin to 0)
+      await bluetooth.writeBytes(Uint8List.fromList([
+        0x1B, 0x40, 
+        0x1B, 0x53, 
+        0x1B, 0x61, 0x00, 
+        0x1D, 0x4C, 0x00, 0x00
+      ]));
+
+      // 2. Delay ให้ Hardware เคลียร์ Buffer (สั้นๆ 500ms)
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // 3. สั่งพิมพ์รูปภาพ
+      await bluetooth.printImageBytes(imageBytes);
+
+      // 4. จบงานด้วยการเว้นบรรทัดและล้างสถานะอีกครั้งเพื่อกันบิลถัดไปเพี้ยน
+      await bluetooth.printNewLine();
+      await bluetooth.printNewLine();
+      await bluetooth.writeBytes(Uint8List.fromList([0x1B, 0x40])); 
+      
+      await bluetooth.paperCut();
+    }
+  }
+
+  // ฟังก์ชันพิมพ์ใบเสร็จหลัก
   static Future<void> printReceipt({
     required String tableName,
     required double total,
     required List<Map<String, dynamic>> cart,
   }) async {
-    bool? isConnected = await bluetooth.isConnected;
-    if (isConnected == true) {
-      // ส่งรหัสลับบอกเครื่อง Epson ว่าเราจะคุยภาษาไทย (Codepage 874)
-      bluetooth.writeBytes(Uint8List.fromList([0x1B, 0x74, 0x1E]));
+    if (await bluetooth.isConnected == true) {
+      // --- [STEP 1] Reset และเปิดโหมดไทยเบอร์ 21 ---
+      // 0x1B, 0x40 = Reset
+      // 0x1B, 0x74, 21 = เลือก CodePage 21 (ไทยที่ถูกต้องของเครื่องนี้)
+      await bluetooth.writeBytes(Uint8List.fromList([0x1B, 0x40, 0x1B, 0x74, 21]));
 
-      String dateStr = DateFormat('dd/MM/yyyy HH:mm').format(DateTime.now());
+      // --- [STEP 2] พิมพ์เนื้อหา ---
+      await bluetooth.writeBytes(_thaiToBytes("      เป๋าตุง บ่อนไก่\n"));
+      await bluetooth.writeBytes(_thaiToBytes("      095-532-5638\n"));
+      await bluetooth.writeBytes(_thaiToBytes("--------------------------------\n"));
 
-      // 1. หัวกระดาษ (จัดกลาง)
-      bluetooth.printCustom("เป๋าตุงบ่อนไก่", 2, 1); // Size 2, Align Center (1)
-      bluetooth.printCustom("โทร : 095-532-5638", 1, 1);
-      bluetooth.printCustom("--------------------------------", 1, 1);
+      String dateStr = DateFormat('dd/MM/yy HH:mm').format(DateTime.now());
+      await bluetooth.writeBytes(_formatLine("โต๊ะ: $tableName", dateStr));
+      await bluetooth.writeBytes(_thaiToBytes("--------------------------------\n"));
 
-      // 2. ข้อมูลโต๊ะและวันที่ (ชิดซ้าย-ขวาอัตโนมัติ)
-      // ขนาดตัวอักษร 1 (ปกติ)
-      bluetooth.printLeftRight("โต๊ะ : $tableName", "Date: $dateStr", 1);
-      bluetooth.printCustom("--------------------------------", 1, 1);
-
-      // 3. รายการอาหาร (วนลูปปริ้นชิดซ้าย-ขวา)
       for (var item in cart) {
-        String leftText = "${item['name']} x${item['qty']}";
-        String rightText = "${(item['price'] * item['qty']).toInt()}";
-        
-        // ใช้ฟังก์ชันนี้แทนการคำนวณเว้นวรรคเอง!
-        bluetooth.printLeftRight(leftText, rightText, 1);
+        String name = "${item['name']} x${item['qty']}";
+        String price = "${(item['price'] * item['qty']).toInt()}";
+        await bluetooth.writeBytes(_formatLine(name, price));
       }
 
-      // 4. สรุปยอด (ตัวใหญ่ขึ้นนิดนึง)
-      bluetooth.printCustom("--------------------------------", 1, 1);
-      bluetooth.printLeftRight("TOTAL:", "${total.toInt()} THB", 2); // Size 2
-      bluetooth.printCustom("--------------------------------", 1, 1);
+      // --- [ยอดรวม - ปรับให้ใหญ่พิเศษ] ---
+      await bluetooth.writeBytes(_thaiToBytes("--------------------------------\n"));
+      
+      // 1. เปิดโหมด ตัวหนา (Bold) และ ขนาดใหญ่ 2 เท่า (Double Size)
+      // 0x1B, 0x45, 0x01 = Bold ON
+      // 0x1D, 0x21, 0x11 = Double Height + Double Width (2x)
+      await bluetooth.writeBytes(Uint8List.fromList([0x1B, 0x45, 0x01, 0x1D, 0x21, 0x11]));
+      
+      // 2. พิมพ์ยอดรวม (เนื่องจากตัวใหญ่ขึ้น พื้นที่บรรทัดจะลดลงเหลือประมาณ 16-20 ตัวอักษร)
+      await bluetooth.writeBytes(_thaiToBytes("รวมเงิน: ${total.toInt()}.-\n"));
 
-      // 5. ท้ายบิล
-      bluetooth.printNewLine();
-      bluetooth.printCustom("Thank you!", 1, 1);
-      bluetooth.printNewLine();
-      bluetooth.printNewLine();
-      bluetooth.paperCut();
+      // 3. ปิดโหมดตัวใหญ่ กลับมาเป็นขนาดปกติ (สำคัญมาก! ไม่งั้นบรรทัดถัดไปจะใหญ่ตาม)
+      // 0x1B, 0x45, 0x00 = Bold OFF
+      // 0x1D, 0x21, 0x00 = Normal Size
+      await bluetooth.writeBytes(Uint8List.fromList([0x1B, 0x45, 0x00, 0x1D, 0x21, 0x00]));
+      
+      await bluetooth.writeBytes(_thaiToBytes("--------------------------------\n"));
+
+      // --- [STEP 3] ท้ายบิลและเลื่อนกระดาษ ---
+      await bluetooth.writeBytes(_thaiToBytes("\n      ขอบคุณที่ใช้บริการครับ\n\n\n\n"));
+      
+      // สั่งตัดกระดาษ (GS V 66 0)
+      await bluetooth.writeBytes(Uint8List.fromList([0x1D, 0x56, 0x42, 0x00]));
     }
   }
 }

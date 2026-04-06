@@ -1,5 +1,7 @@
+import 'dart:typed_data';
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 import 'printer_service.dart'; // เพิ่มบรรทัดนี้ต่อจาก import ตัวอื่น
+import 'package:my_pos_app/printer_test.dart';
 import 'package:flutter/material.dart';
 import 'database_helper.dart';
 import 'package:intl/intl.dart';
@@ -336,14 +338,34 @@ class _POSScreenState extends State<POSScreen> {
                 const Text("------------------------------------------"),
                 const SizedBox(height: 10),
                 Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("ยอดรวมทั้งสิ้น", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)), Text("${total.toInt()} บาท", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 22, color: Colors.indigo))]),
+                const SizedBox(height: 15),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.deepOrange, // สีส้มเด่นๆ ให้รู้ว่าเป็นปุ่มเทส
+                    minimumSize: const Size(double.infinity, 50),
+                  ),
+                  icon: const Icon(Icons.build, color: Colors.white),
+                  label: const Text("ทดสอบภาษาไทย (Hunter Mode)", style: TextStyle(color: Colors.white)),
+                  onPressed: () async {
+                    // เรียกใช้ฟังก์ชันจากไฟล์ printer_test.dart ที่เราแยกไว้
+                    await PrinterTest.runThaiHunter();
+                    
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("กำลังพิมพ์รหัสทดสอบ... เช็คที่กระดาษได้เลย")),
+                    );
+                  },
+                ),
               ],
             ),
           ),
         ),
         actions: [
-          OutlinedButton.icon(
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+            icon: const Icon(Icons.print, color: Colors.white),
+            label: const Text("พิมพ์ใบเสร็จ", style: TextStyle(color: Colors.white)),
             onPressed: () async {
-              // สั่งปริ้นตรงๆ ผ่าน Service ตัวใหม่
+              // เรียกใช้ระบบ Native Text ตรงๆ (ไวและแม่นยำกว่า)
               await PrinterService.printReceipt(
                 tableName: selectedTable,
                 total: total,
@@ -351,11 +373,9 @@ class _POSScreenState extends State<POSScreen> {
               );
 
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("กำลังปริ้นใบเสร็จ...")),
+                const SnackBar(content: Text("พิมพ์ใบเสร็จสำเร็จ")),
               );
             },
-            icon: const Icon(Icons.print),
-            label: const Text("พิมพ์ใบเสร็จ"),
           ),
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("แก้ไขรายการ")),
           ElevatedButton(
