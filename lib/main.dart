@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 import 'printer_service.dart'; // เพิ่มบรรทัดนี้ต่อจาก import ตัวอื่น
@@ -5,6 +6,8 @@ import 'package:my_pos_app/printer_test.dart';
 import 'package:flutter/material.dart';
 import 'database_helper.dart';
 import 'package:intl/intl.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() => runApp(const MyApp());
 
@@ -129,9 +132,35 @@ class _POSScreenState extends State<POSScreen> {
   List<Map<String, dynamic>> products = [];
   List<Map<String, dynamic>> cart = [];
 
+  // สร้าง Pool ของ AudioPlayer 5 ตัวเพื่อรองรับการกดรัวๆ (Round-Robin)
+  final List<AudioPlayer> _audioPlayers = List.generate(5, (_) => AudioPlayer()..setReleaseMode(ReleaseMode.stop));
+  int _currentPlayerIndex = 0;
+
+  void _initSound() {
+    // สั่งให้ Player ทุกตัวโหลดไฟล์เสียงเตรียมไว้ล่วงหน้า
+    for (var player in _audioPlayers) {
+      player.setSource(AssetSource('sounds/beep.mp3'));
+    }
+  }
+
+  void _playBeep() {
+    // สั่งเล่นเสียงจากคิวปัจจุบัน แล้วสลับไปยังคิวถัดไปทันที
+    _audioPlayers[_currentPlayerIndex].play(AssetSource('sounds/beep.mp3'));
+    _currentPlayerIndex = (_currentPlayerIndex + 1) % _audioPlayers.length;
+  }
+
+  @override
+  void dispose() {
+    for (var player in _audioPlayers) {
+      player.dispose();
+    }
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
+    _initSound();
     _loadProducts();
     _loadTableOrder(selectedTable); // โหลดของโต๊ะ 1 มาก่อน
   }
@@ -355,6 +384,22 @@ class _POSScreenState extends State<POSScreen> {
                     );
                   },
                 ),
+                const SizedBox(height: 10),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueGrey, 
+                    minimumSize: const Size(double.infinity, 50),
+                  ),
+                  icon: const Icon(Icons.money, color: Colors.white),
+                  label: const Text("เปิดลิ้นชักเก็บเงิน", style: TextStyle(color: Colors.white)),
+                  onPressed: () async {
+                    await PrinterService.openCashDrawer();
+                    
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("ส่งสัญญาณเปิดลิ้นชักแล้ว")),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -407,6 +452,7 @@ class _POSScreenState extends State<POSScreen> {
         const SizedBox(width: 10),
         // กลาง: เมนู (เพิ่ม Auto-Park เมื่อเพิ่มของ)
         Expanded(flex: 3, child: products.isEmpty ? const Center(child: Text("ไปเพิ่มเมนูที่หน้าจัดการก่อนครับ")) : GridView.builder(gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(maxCrossAxisExtent: 160, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.1), itemCount: products.length, itemBuilder: (ctx, i) => Card(child: InkWell(onTap: () {
+          _playBeep();
           setState(() {
             int idx = cart.indexWhere((it) => it['id'] == products[i]['id']);
             if(idx != -1) cart[idx]['qty']++; else cart.add({...products[i], 'qty': 1});
@@ -558,14 +604,129 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
 
   void _refresh() async {
     final data = await DatabaseHelper.instance.getAllProducts();
-    setState(() { prods = data; });
+    // [สำคัญ!] sqflite จะส่ง List แบบอ่านอย่างเดียว (Immutable) มาให้
+    // ต้องครอบด้วย List.from() เพื่อให้สามารถสลับตำแหน่ง (remove/insert) ได้ ไม่งั้นแอปจะแครชเวลาลากครับ
+    setState(() { prods = List<Map<String, dynamic>>.from(data); });
+  }
+
+  // 💡 ทริคเสริม: ทำให้มันจำตำแหน่งถาวร (Persistence)
+  // เราใช้ SQLite บันทึกข้อมูลลง Database เลย ซึ่งดีกว่า SharedPreferences
+  void _saveMenuOrder() async {
+    await DatabaseHelper.instance.updateProductOrder(prods);
+  }
+
+  // --- ฟังก์ชันส่งออก (Export) ---
+  void _exportMenu() {
+    // แปลง List เมนูเป็น JSON String
+    String jsonMenu = json.encode(prods);
+    
+    // เรียกคำสั่ง Share ของมือถือ
+    Share.share(jsonMenu, subject: 'สำรองข้อมูลเมนู เป๋าตุง บ่อนไก่');
+  }
+
+  // --- ฟังก์ชันนำเข้า (Import) ---
+  void _showImportDialog() {
+    final controller = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("นำเข้าข้อมูลเมนู"),
+        content: TextField(
+          controller: controller,
+          maxLines: 5,
+          decoration: const InputDecoration(
+            hintText: "วางรหัส JSON ที่คัดลอกมาที่นี่...",
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ยกเลิก")),
+          ElevatedButton(
+            onPressed: () async {
+              try {
+                List<dynamic> decoded = json.decode(controller.text);
+                // วนลูปเพิ่มเมนูลงใน SQLite
+                for (var item in decoded) {
+                  if (item['name'] != null && item['price'] != null) {
+                    await DatabaseHelper.instance.addProduct(item['name'].toString(), double.parse(item['price'].toString()));
+                  }
+                }
+                Navigator.pop(ctx);
+                _refresh(); // โหลดข้อมูลจาก DB มาแสดงใหม่
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("นำเข้าข้อมูลสำเร็จ!")));
+              } catch (e) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("รหัสผิดพลาด นำเข้าไม่ได้!")));
+              }
+            },
+            child: const Text("ตกลง"),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[50],
-      body: ListView.builder(padding: const EdgeInsets.all(10), itemCount: prods.length, itemBuilder: (ctx, i) => Card(child: ListTile(title: Text(prods[i]['name'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text("${prods[i]['price']} ฿"), trailing: IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () async { await DatabaseHelper.instance.deleteProduct(prods[i]['id']); _refresh(); })))),
+      body: Column(
+        children: [
+          // ปุ่ม Export/Import
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.upload),
+                  label: const Text("ส่งออกเมนู"),
+                  onPressed: _exportMenu,
+                ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.download),
+                  label: const Text("นำเข้าเมนู"),
+                  onPressed: _showImportDialog,
+                ),
+              ],
+            ),
+          ),
+          // รายการเมนูที่ลากสลับได้
+          Expanded(
+            child: ReorderableListView(
+              padding: const EdgeInsets.only(left: 10, right: 10, top: 10, bottom: 100),
+              onReorder: (int oldIndex, int newIndex) async {
+                setState(() {
+                  if (newIndex > oldIndex) {
+                    newIndex -= 1;
+                  }
+                  final item = prods.removeAt(oldIndex);
+                  prods.insert(newIndex, item);
+                });
+                _saveMenuOrder();
+              },
+              children: [
+                for (int i = 0; i < prods.length; i++)
+                  Card(
+                    key: ValueKey(prods[i]['id']),
+                    child: ListTile(
+                      leading: const Icon(Icons.drag_handle, color: Colors.grey),
+                      title: Text(prods[i]['name'], style: const TextStyle(fontWeight: FontWeight.bold)), 
+                      subtitle: Text("${prods[i]['price']} ฿"), 
+                      trailing: Wrap(
+                        spacing: 12,
+                        children: [
+                          IconButton(icon: const Icon(Icons.edit, color: Colors.blue), onPressed: () => _showEditDialog(i)),
+                          IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () async { await DatabaseHelper.instance.deleteProduct(prods[i]['id']); _refresh(); })
+                        ],
+                      )
+                    )
+                  )
+              ],
+            ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(onPressed: _showAdd, label: const Text("เพิ่มเมนู"), icon: const Icon(Icons.add)),
     );
   }
@@ -584,10 +745,60 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
 
             await DatabaseHelper.instance.addProduct(nameCtrl.text, double.parse(priceCtrl.text));
             nameCtrl.clear(); priceCtrl.clear();
-            Navigator.pop(context); _refresh();
+            Navigator.pop(ctx); _refresh();
           }
         }, child: const Text("บันทึก"))
       ],
     ));
+  }
+
+  void _showEditDialog(int index) {
+    // สร้าง Controller เพื่อดึงข้อมูลเก่ามาใส่ในช่องกรอก
+    final nameController = TextEditingController(text: prods[index]['name']);
+    final priceController = TextEditingController(text: prods[index]['price'].toString());
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text("แก้ไขรายการเมนู"),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: "ชื่อเมนู"),
+              ),
+              TextField(
+                controller: priceController,
+                decoration: const InputDecoration(labelText: "ราคา"),
+                keyboardType: TextInputType.number,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("ยกเลิก"),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (nameController.text.isNotEmpty && priceController.text.isNotEmpty) {
+                  // อัปเดตข้อมูลผ่าน SQLite
+                  await DatabaseHelper.instance.updateProduct(prods[index]['id'], nameController.text, double.parse(priceController.text));
+                  Navigator.pop(context);
+                  _refresh(); // โหลดรายการเมนูใหม่
+                  
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("อัปเดตข้อมูลเรียบร้อย")),
+                  );
+                }
+              },
+              child: const Text("บันทึก"),
+            ),
+          ],
+        );
+      },
+    );
   }
 }
