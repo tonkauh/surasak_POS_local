@@ -15,11 +15,11 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
-    return await openDatabase(path, version: 2, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 3, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
 
   Future _createDB(Database db, int version) async {
-    await db.execute('CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, price REAL, sort_order INTEGER DEFAULT 0)');
+    await db.execute('CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, price REAL, sort_order INTEGER DEFAULT 0, color INTEGER)');
     await db.execute('CREATE TABLE sales (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, total REAL, tableName TEXT)');
     await db.execute('CREATE TABLE sale_items (id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER, name TEXT, price REAL, qty INTEGER)');
     
@@ -41,14 +41,17 @@ class DatabaseHelper {
     if (oldVersion < 2) {
       await db.execute('ALTER TABLE products ADD COLUMN sort_order INTEGER DEFAULT 0');
     }
+    if (oldVersion < 3) {
+      await db.execute('ALTER TABLE products ADD COLUMN color INTEGER');
+    }
   }
 
   // --- ระบบจัดการสินค้า ---
-  Future<int> addProduct(String name, double price) async => (await database).insert('products', {'name': name, 'price': price});
+  Future<int> addProduct(String name, double price, int color) async => (await database).insert('products', {'name': name, 'price': price, 'color': color});
   // ดึงข้อมูลโดยเรียงตาม sort_order ก่อน
   Future<List<Map<String, dynamic>>> getAllProducts() async => (await database).query('products', orderBy: 'sort_order ASC, id ASC');
   Future<int> deleteProduct(int id) async => (await database).delete('products', where: 'id = ?', whereArgs: [id]);
-  Future<int> updateProduct(int id, String name, double price) async => (await database).update('products', {'name': name, 'price': price}, where: 'id = ?', whereArgs: [id]);
+  Future<int> updateProduct(int id, String name, double price, int color) async => (await database).update('products', {'name': name, 'price': price, 'color': color}, where: 'id = ?', whereArgs: [id]);
 
   // --- ระบบจัดเรียงลำดับสินค้า ---
   Future<void> updateProductOrder(List<Map<String, dynamic>> orderedProducts) async {

@@ -186,6 +186,39 @@ class _POSScreenState extends State<POSScreen> {
 
   double get total => cart.fold(0, (sum, item) => sum + (item['price'] * item['qty']));
 
+  void _resetCart() {
+    // แสดงหน้าต่างถามให้แน่ใจก่อนล้าง เพื่อป้องกันพนักงานกดพลาด
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey[900], // ปรับพื้นหลังให้เป็นสีเข้ม
+        title: const Text("ล้างรายการทั้งหมด?", style: TextStyle(color: Colors.white)), // ฟอนต์สีขาวสว่าง
+        content: const Text("คุณต้องการลบรายการอาหารในบิลนี้ทั้งหมดใช่หรือไม่?", style: TextStyle(color: Colors.white70)), // ฟอนต์สีขาวหม่นเพื่อให้อ่านง่าย
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx), 
+            child: const Text("ยกเลิก", style: TextStyle(color: Colors.white70))
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              setState(() {
+                cart.clear(); 
+              });
+              _autoPark(); // เคลียร์บิลในฐานข้อมูลด้วย
+              Navigator.pop(ctx); // ปิด Dialog
+              
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text("ล้างบิลเรียบร้อยแล้ว"), backgroundColor: Colors.red),
+              );
+            },
+            child: const Text("ยืนยันการล้างบิล", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showChangeCalculator(double totalAmount) {
     // ใช้ Controller เพื่อควบคุมตัวเลขในช่องกรอก
     final TextEditingController receivedCtrl = TextEditingController();
@@ -240,7 +273,7 @@ class _POSScreenState extends State<POSScreen> {
                       // แสดงเงินทอน
                       Text(
                         "เงินทอน: ${change < 0 ? 0 : change.toInt()} ฿", 
-                        style: const TextStyle(fontSize: 34, color: Colors.green, fontWeight: FontWeight.bold)
+                        style: const TextStyle(fontSize: 34, color: Color.fromARGB(255, 81, 0, 0), fontWeight: FontWeight.bold)
                       ),
                       
                       // แสดงยอดที่ยังขาด (ถ้ามี)
@@ -467,8 +500,19 @@ class _POSScreenState extends State<POSScreen> {
             IconButton(icon: const Icon(Icons.remove_circle_outline, size: 20), onPressed: () { setState(() { if(cart[i]['qty'] > 1) cart[i]['qty']--; else cart.removeAt(i); }); _autoPark(); }),
             Text("${cart[i]['qty']}"),
             IconButton(icon: const Icon(Icons.add_circle_outline, size: 20), onPressed: () { setState(() { cart[i]['qty']++; }); _autoPark(); }),
-          ]), trailing: Text("${(cart[i]['price']*cart[i]['qty']).toInt()}")))),
-          Padding(padding: const EdgeInsets.all(15), child: Column(children: [Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("รวม:"), Text("${total.toInt()} ฿", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.indigo))]), const SizedBox(height: 10), SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: cart.isEmpty ? null : _showPreview, child: const Text("ยืนยันออเดอร์")))]))
+          ]), trailing: Text("${(cart[i]['price']*cart[i]['qty']).toInt()} ฿")))),
+          Padding(padding: const EdgeInsets.all(15), child: Column(children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Text("รวม:"), Text("${total.toInt()} ฿", style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.indigo))]), 
+            const SizedBox(height: 10), 
+            SizedBox(width: double.infinity, height: 50, child: ElevatedButton(onPressed: cart.isEmpty ? null : _showPreview, child: const Text("ยืนยันออเดอร์"))),
+            const SizedBox(height: 10),
+            SizedBox(width: double.infinity, child: ElevatedButton.icon(
+              onPressed: cart.isEmpty ? null : _resetCart,
+              icon: const Icon(Icons.refresh, color: Colors.white),
+              label: const Text("ล้างรายการ", style: TextStyle(color: Colors.white)),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700, padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            ))
+          ]))
         ])),
       ]),
     );
@@ -599,6 +643,19 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
   final priceCtrl = TextEditingController(); 
   List<Map<String, dynamic>> prods = [];
 
+  final List<Color> pastelColors = [
+    Colors.red.shade100,
+    Colors.blue.shade100,
+    Colors.green.shade100,
+    Colors.orange.shade100,
+    Colors.purple.shade100,
+    Colors.yellow.shade100,
+    Colors.teal.shade100,
+    Colors.pink.shade100,
+    Colors.cyan.shade100,
+    Colors.brown.shade100,
+  ];
+
   @override
   void initState() { super.initState(); _refresh(); }
 
@@ -649,7 +706,8 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
                 // วนลูปเพิ่มเมนูลงใน SQLite
                 for (var item in decoded) {
                   if (item['name'] != null && item['price'] != null) {
-                    await DatabaseHelper.instance.addProduct(item['name'].toString(), double.parse(item['price'].toString()));
+                    int color = item['color'] != null ? int.parse(item['color'].toString()) : Colors.grey.shade100.value;
+                    await DatabaseHelper.instance.addProduct(item['name'].toString(), double.parse(item['price'].toString()), color);
                   }
                 }
                 Navigator.pop(ctx);
@@ -709,6 +767,7 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
                 for (int i = 0; i < prods.length; i++)
                   Card(
                     key: ValueKey(prods[i]['id']),
+                    color: Color(prods[i]['color'] ?? Colors.white.value),
                     child: ListTile(
                       leading: const Icon(Icons.drag_handle, color: Colors.grey),
                       title: Text(prods[i]['name'], style: const TextStyle(fontWeight: FontWeight.bold)), 
@@ -742,8 +801,8 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
         TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("ยกเลิก")),
         ElevatedButton(onPressed: () async {
           if(nameCtrl.text.isNotEmpty && priceCtrl.text.isNotEmpty) {
-
-            await DatabaseHelper.instance.addProduct(nameCtrl.text, double.parse(priceCtrl.text));
+            // Add a default color when adding a new product
+            await DatabaseHelper.instance.addProduct(nameCtrl.text, double.parse(priceCtrl.text), Colors.grey.shade100.value);
             nameCtrl.clear(); priceCtrl.clear();
             Navigator.pop(ctx); _refresh();
           }
@@ -785,7 +844,7 @@ class _ManageMenuScreenState extends State<ManageMenuScreen> {
               onPressed: () async {
                 if (nameController.text.isNotEmpty && priceController.text.isNotEmpty) {
                   // อัปเดตข้อมูลผ่าน SQLite
-                  await DatabaseHelper.instance.updateProduct(prods[index]['id'], nameController.text, double.parse(priceController.text));
+                  await DatabaseHelper.instance.updateProduct(prods[index]['id'], nameController.text, double.parse(priceController.text), prods[index]['color']);
                   Navigator.pop(context);
                   _refresh(); // โหลดรายการเมนูใหม่
                   
